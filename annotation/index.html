@@ -1,0 +1,156 @@
+<!doctype html><html lang="en"><head>
+<meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1">
+<title>LISS-IV Road Observability Study</title>
+<style>
+:root{--bg:#0f1620;--panel:#1a2634;--panel2:#22303f;--line:#2d3d4f;--ink:#e8eef5;
+  --muted:#8595a8;--accent:#2dd4bf;--danger:#f26d6d;--ok:#6dd66d;--radius:10px}
+@media(prefers-color-scheme:light){:root{--bg:#eef2f6;--panel:#fff;--panel2:#f2f6fa;--line:#d3dde7;
+  --ink:#14202c;--muted:#5a6b7d;--accent:#0e9c86;--danger:#c94b4b;--ok:#2e9e2e}}
+*{box-sizing:border-box}html,body{margin:0}
+body{background:var(--bg);color:var(--ink);min-height:100vh;
+  font-family:ui-sans-serif,system-ui,-apple-system,"Segoe UI",Roboto,sans-serif;line-height:1.5;
+  display:flex;justify-content:center;padding:24px 16px 60px}
+.wrap{width:100%;max-width:640px;display:flex;flex-direction:column;gap:16px}
+h1{font-size:22px;font-weight:700;margin:0;letter-spacing:-.01em}
+.lede{color:var(--muted);font-size:15px;margin:0}
+.eyebrow{text-transform:uppercase;letter-spacing:.12em;font-size:11px;font-weight:600;color:var(--accent)}
+.card{background:var(--panel);border:1px solid var(--line);border-radius:var(--radius);padding:18px}
+.rules{display:flex;flex-direction:column;gap:8px;font-size:14px}.rules b{color:var(--accent)}
+label.fld{display:flex;flex-direction:column;gap:6px;font-size:13px;color:var(--muted)}
+input[type=text]{background:var(--panel2);border:1px solid var(--line);border-radius:8px;color:var(--ink);padding:11px 12px;font-size:15px;font-family:inherit}
+input[type=text]:focus{outline:2px solid var(--accent);outline-offset:1px}
+button{font-family:inherit;font-size:14px;font-weight:600;border-radius:8px;cursor:pointer;border:1px solid var(--line);background:var(--panel2);color:var(--ink);padding:10px 16px}
+button:active{transform:translateY(1px)}button:disabled{opacity:.5;cursor:default}
+.btn-primary{background:var(--accent);color:#04201b;border-color:transparent}
+.btn-danger{color:var(--danger)}.on{background:var(--accent);color:#04201b;border-color:transparent}
+.hidden{display:none!important}
+.topbar{display:flex;justify-content:space-between;align-items:center;font-size:13px}
+.progress{font-variant-numeric:tabular-nums;color:var(--muted)}
+.timer{font-variant-numeric:tabular-nums;color:var(--muted)}
+.bar{height:6px;background:var(--panel2);border-radius:20px;overflow:hidden}
+.bar>i{display:block;height:100%;background:var(--accent);width:0%;transition:width .3s}
+.stage{position:relative;width:100%;aspect-ratio:1;background:#000;border-radius:var(--radius);overflow:hidden;border:1px solid var(--line);touch-action:none;cursor:crosshair}
+.stage canvas{position:absolute;inset:0;width:100%;height:100%;display:block}
+.toolrail{display:flex;flex-wrap:wrap;gap:8px;align-items:center}
+.spacer{flex:1}
+.sizewrap{display:flex;align-items:center;gap:8px;font-size:13px;color:var(--muted)}
+input[type=range]{accent-color:var(--accent)}
+.toggle{display:flex;align-items:center;gap:8px;font-size:14px;background:var(--panel2);border:1px solid var(--line);border-radius:8px;padding:9px 12px;cursor:pointer;user-select:none}
+.toggle input{accent-color:var(--danger);width:16px;height:16px}
+.hint{font-size:12.5px;color:var(--muted)}
+.status{font-size:12.5px}.status.ok{color:var(--ok)}.status.err{color:var(--danger)}
+.done-check{font-size:44px;text-align:center}
+</style></head><body><div class="wrap">
+
+<section id="start" class="wrap" style="max-width:none">
+  <div><div class="eyebrow">LISS-IV Road Observability Study</div><h1>Shade the roads you can see</h1></div>
+  <p class="lede">You'll see satellite image tiles (5.8&nbsp;m/pixel, false-colour). On each, <b>paint over</b> every road you can clearly see. Please spend about <b>20–30 minutes</b> and do as many tiles as you can — you can stop and submit anytime.</p>
+  <div class="card rules">
+    <div>1. <b>Paint</b> — press &amp; drag over a road to shade it. Cover its full length and width.</div>
+    <div>2. <b>Brush / Erase / Size</b> — tune the brush; erase to fix mistakes.</div>
+    <div>3. <b>Only what you're sure of</b> — don't guess. No roads? tick <b>No visible roads</b>.</div>
+    <div>4. Each tile saves when you click <b>Save &amp; next</b>. Click <b>Finish</b> when you're done.</div>
+  </div>
+  <label class="fld">Your name or student ID<input type="text" id="sid" placeholder="e.g. CS21B045 or Priya" autocomplete="off"></label>
+  <button class="btn-primary" id="startBtn" style="align-self:flex-start;padding:12px 22px">Start →</button>
+  <p class="status err" id="startErr"></p>
+</section>
+
+<section id="annot" class="wrap hidden" style="max-width:none">
+  <div class="topbar"><span class="progress" id="prog">Tile 1 / 24</span><span class="timer" id="timer">0:00</span></div>
+  <div class="bar"><i id="barfill"></i></div>
+  <div class="stage" id="stage">
+    <canvas id="imgc" width="512" height="512"></canvas>
+    <canvas id="paintc" width="512" height="512"></canvas>
+  </div>
+  <div class="toolrail">
+    <button id="brushBtn" class="on">Brush</button>
+    <button id="eraseBtn">Erase</button>
+    <div class="sizewrap">Size <input type="range" id="size" min="6" max="40" value="16"></div>
+    <button id="clearBtn" class="btn-danger">Clear</button>
+    <span class="spacer"></span>
+    <label class="toggle"><input type="checkbox" id="noRoads"> No visible roads</label>
+  </div>
+  <div class="toolrail">
+    <span class="status" id="saveStatus"></span>
+    <span class="spacer"></span>
+    <button id="finishBtn">Finish &amp; submit</button>
+    <button class="btn-primary" id="nextBtn" style="padding:11px 22px">Save &amp; next →</button>
+  </div>
+  <p class="hint">Tip: after ~20–30 minutes you can click <b>Finish &amp; submit</b> even if tiles remain.</p>
+</section>
+
+<section id="done" class="wrap hidden" style="max-width:none">
+  <div class="done-check">✓</div><h1 style="text-align:center">Thank you!</h1>
+  <p class="lede" style="text-align:center" id="doneMsg">Your annotations have been submitted. You can close this tab.</p>
+</section>
+
+</div>
+<script>
+const M=256;              // export mask resolution (full GT resolution)
+let student='',tiles=[],idx=0,tStart=0,sessionStart=0,timerId=null;
+let mode='brush',brush=16,painting=false,noRoads=false;
+const $=id=>document.getElementById(id);
+const imgc=$('imgc'),ictx=imgc.getContext('2d'),pc=$('paintc'),pctx=pc.getContext('2d'),stage=$('stage');
+let img=new Image();
+function show(id){['start','annot','done'].forEach(s=>$(s).classList.toggle('hidden',s!==id))}
+function shuffle(a){for(let i=a.length-1;i>0;i--){const j=Math.random()*(i+1)|0;[a[i],a[j]]=[a[j],a[i]]}return a}
+
+$('startBtn').onclick=async()=>{
+  student=$('sid').value.trim(); if(!student){$('sid').focus();return}
+  $('startErr').textContent='Loading tiles…';
+  try{const r=await fetch('tiles.json');tiles=shuffle(await r.json())}
+  catch(e){$('startErr').textContent='Could not load tiles.json — is the server running?';return}
+  idx=0;sessionStart=Date.now();show('annot');startTimer();loadTile();
+};
+function startTimer(){timerId=setInterval(()=>{const s=(Date.now()-sessionStart)/1000|0;$('timer').textContent=(s/60|0)+':'+String(s%60).padStart(2,'0')},1000)}
+
+function loadTile(){
+  const t=tiles[idx];noRoads=false;$('noRoads').checked=false;
+  $('prog').textContent='Tile '+(idx+1)+' / '+tiles.length;
+  $('barfill').style.width=(idx/tiles.length*100)+'%';
+  $('saveStatus').textContent='';$('saveStatus').className='status';
+  pctx.clearRect(0,0,512,512);
+  img=new Image();img.onload=()=>{ictx.clearRect(0,0,512,512);ictx.drawImage(img,0,0,512,512)};img.src=t.uri;
+  tStart=Date.now();
+}
+function ptr(e){const r=pc.getBoundingClientRect();const cx=(e.touches?e.touches[0].clientX:e.clientX)-r.left;const cy=(e.touches?e.touches[0].clientY:e.clientY)-r.top;return[cx/r.width*512,cy/r.height*512]}
+function stamp(x,y){pctx.globalCompositeOperation=(mode==='erase')?'destination-out':'source-over';pctx.fillStyle='rgba(45,212,191,0.55)';pctx.beginPath();pctx.arc(x,y,brush,0,7);pctx.fill()}
+function down(e){if(noRoads)return;e.preventDefault();painting=true;const[x,y]=ptr(e);stamp(x,y)}
+function move(e){if(!painting)return;e.preventDefault();const[x,y]=ptr(e);stamp(x,y)}
+function up(){painting=false}
+stage.addEventListener('mousedown',down);window.addEventListener('mousemove',move);window.addEventListener('mouseup',up);
+stage.addEventListener('touchstart',down,{passive:false});stage.addEventListener('touchmove',move,{passive:false});stage.addEventListener('touchend',up);
+$('brushBtn').onclick=()=>{mode='brush';$('brushBtn').classList.add('on');$('eraseBtn').classList.remove('on')};
+$('eraseBtn').onclick=()=>{mode='erase';$('eraseBtn').classList.add('on');$('brushBtn').classList.remove('on')};
+$('size').oninput=e=>brush=+e.target.value;
+$('clearBtn').onclick=()=>pctx.clearRect(0,0,512,512);
+$('noRoads').onchange=e=>{noRoads=e.target.checked;if(noRoads)pctx.clearRect(0,0,512,512)};
+
+function exportMask(){
+  const off=document.createElement('canvas');off.width=M;off.height=M;const octx=off.getContext('2d');
+  octx.drawImage(pc,0,0,M,M);const d=octx.getImageData(0,0,M,M).data;const bytes=new Uint8Array(M*M/8);
+  for(let i=0;i<M*M;i++){if(d[i*4+3]>40)bytes[i>>3]|=(1<<(i&7))}
+  let s='';for(let i=0;i<bytes.length;i++)s+=String.fromCharCode(bytes[i]);return btoa(s)
+}
+async function saveTile(){
+  const t=tiles[idx];
+  const rec={student:student,res:M,tile:{id:t.id,cat:t.cat,noRoads:noRoads,mask:noRoads?'':exportMask(),ms:Date.now()-tStart},idx:idx,total:tiles.length};
+  $('saveStatus').textContent='Saving…';$('saveStatus').className='status';
+  try{
+    const r=await fetch('submit',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify(rec)});
+    if(!r.ok)throw new Error(r.status);
+    $('saveStatus').textContent='Saved ✓';$('saveStatus').className='status ok';return true;
+  }catch(e){
+    $('saveStatus').textContent='Save failed — check connection and try again.';$('saveStatus').className='status err';return false;
+  }
+}
+$('nextBtn').onclick=async()=>{
+  $('nextBtn').disabled=true;
+  const ok=await saveTile();$('nextBtn').disabled=false;
+  if(!ok)return;
+  if(idx+1<tiles.length){idx++;loadTile()}else finish('All tiles done — thank you!');
+};
+$('finishBtn').onclick=async()=>{$('finishBtn').disabled=true;await saveTile();finish('Submitted — thank you for your time!')};
+function finish(msg){clearInterval(timerId);$('doneMsg').textContent=msg;show('done')}
+</script></body></html>

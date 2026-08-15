@@ -1,0 +1,30 @@
+# checkpoints, logs, and per-experiment output
+runs/
+*.pt
+*.pth
+*.log
+*.csv.bak
+
+# data and derived tiles (LISS-IV imagery is not redistributed here)
+data/
+*.npz
+*.npy
+*.tif
+*.tiff
+annotation/tiles.json
+annotation/submissions/
+
+# human-study raw submissions (contain annotator IP addresses)
+human_submissions/
+
+# caches and local files
+__pycache__/
+*.pyc
+.ipynb_checkpoints/
+.DS_Store
+*.zip
+
+# secrets (never commit)
+.bhoonidhi_env
+.kaggle/
+*.env
