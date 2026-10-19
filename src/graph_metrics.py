@@ -1,14 +1,3 @@
-"""Graph/topology metrics computed on raster skeletons.
-
-- apls_raster: simplified APLS on the pixel graph (8-connectivity, unit/diag
-  edge costs). Samples control-point pairs on the GT skeleton, compares
-  shortest-path lengths in GT vs prediction. Missing/unreachable paths score 1.
-  Reported in the paper as "APLS_r" (raster variant) — not identical to the
-  geo-vector APLS of CRESIv2, but measures the same path-continuity property.
-- junction_recall: fraction of GT junctions (skeleton degree >= 3) with a
-  predicted junction within `tol` px.
-"""
-
 import numpy as np
 from scipy.sparse import coo_matrix
 from scipy.sparse.csgraph import dijkstra
@@ -18,7 +7,6 @@ SQRT2 = float(np.sqrt(2.0))
 
 
 def _skel_graph(skel):
-    """skeleton bool (H,W) -> (node index map, sparse adjacency). 8-connectivity."""
     ys, xs = np.nonzero(skel)
     n = len(ys)
     idx = -np.ones(skel.shape, dtype=np.int64)
@@ -41,7 +29,6 @@ def _skel_graph(skel):
 
 
 def _snap(point, skel, tol):
-    """nearest skeleton pixel to (y,x) within tol, or None."""
     y, x = point
     h, w = skel.shape
     y0, y1 = max(0, y - tol), min(h, y + tol + 1)
@@ -56,7 +43,6 @@ def _snap(point, skel, tol):
 
 
 def apls_raster(pred, gt, thr=0.5, n_pairs=30, snap_tol=5, rng=None):
-    """pred, gt: (H,W) float/bool. Returns APLS_r in [0,1] (1 = perfect), or nan."""
     rng = rng or np.random.default_rng(0)
     sk_g = skeletonize(gt >= 0.5)
     sk_p = skeletonize(pred >= thr)
@@ -73,7 +59,7 @@ def apls_raster(pred, gt, thr=0.5, n_pairs=30, snap_tol=5, rng=None):
             continue
         d_g = dijkstra(adj_g, indices=a_g, min_only=True, directed=False)[b_g]
         if not np.isfinite(d_g) or d_g < 1:
-            continue  # GT pair not connected — skip pair
+            continue
         if adj_p is None:
             penalties.append(1.0)
             continue
@@ -114,7 +100,6 @@ def junction_recall(pred, gt, thr=0.5, tol=3):
 
 
 def graph_metrics_batch(probs, masks, thr=0.5, n_pairs=30, max_items=None):
-    """probs, masks: (N,1,H,W). Returns dict of mean apls_r / junction_recall."""
     apls_v, jr_v = [], []
     n = len(probs) if max_items is None else min(len(probs), max_items)
     rng = np.random.default_rng(0)

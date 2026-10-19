@@ -1,17 +1,3 @@
-"""Build the simulated-LISS-IV proxy benchmark from a high-resolution road dataset.
-
-Pipeline (per source image + mask, e.g. DeepGlobe 50 cm RGB 1024x1024):
-  1. Area-downsample image by `factor` (default ~11.6x: 50 cm -> 5.8 m).
-  2. Simulate G/R/NIR: G,R taken from RGB; NIR proxied from a vegetation-index
-     heuristic on the source (documented in RESEARCH.md — this is a proxy, and
-     the paper reports it as such; real LISS-IV is the headline set).
-  3. Downsample the mask with max-pooling then re-thin, so 1-px roads survive.
-  4. Save chips + masks as .npz tiles with region-based split assignment.
-
-Blocked on: disk space for the source dataset. Run once space is freed:
-  python scripts/build_proxy.py --src /data/road_liss4/deepglobe --out /data/road_liss4/proxy
-"""
-
 import argparse
 import pathlib
 import sys
@@ -22,7 +8,6 @@ sys.path.insert(0, str(pathlib.Path(__file__).resolve().parent.parent / "src"))
 
 
 def downsample_image(img, factor):
-    """img: (H,W,C) float32. Exact area pooling via reshape when divisible."""
     h, w, c = img.shape
     hh, ww = h // factor * factor, w // factor * factor
     img = img[:hh, :ww]
@@ -30,8 +15,6 @@ def downsample_image(img, factor):
 
 
 def downsample_mask(mask, factor, keep_frac=0.15):
-    """Max-pool-ish: a coarse pixel is road if >= keep_frac of source px are road.
-    keep_frac tuned so 1-source-lane roads survive without fattening everything."""
     h, w = mask.shape
     hh, ww = h // factor * factor, w // factor * factor
     m = mask[:hh, :ww].reshape(hh // factor, factor, ww // factor, factor)
@@ -39,11 +22,8 @@ def downsample_mask(mask, factor, keep_frac=0.15):
 
 
 def simulate_grnir(rgb_small):
-    """rgb_small: (h,w,3) in [0,1]. Returns (3,h,w): G, R, NIR-proxy.
-    NIR proxy: vegetation (green-dominant, darker red) -> high NIR;
-    built/road (low saturation, bright) -> low-mid NIR."""
     r, g, b = rgb_small[..., 0], rgb_small[..., 1], rgb_small[..., 2]
-    exg = np.clip(2 * g - r - b, 0, None)          # excess-green vegetation proxy
+    exg = np.clip(2 * g - r - b, 0, None)
     brightness = (r + g + b) / 3
     nir = np.clip(0.15 + 1.8 * exg + 0.3 * brightness, 0, 1)
     return np.stack([g, r, nir]).astype(np.float32)
@@ -72,7 +52,6 @@ def main():
     if not sats:
         sys.exit(f"no *_sat.jpg found in {src}")
     rng = np.random.default_rng(0)
-    # region-ish split: sort by id and split contiguously (DeepGlobe ids cluster spatially)
     n = len(sats)
     n_test = int(n * args.test_frac)
     n_val = int(n * args.val_frac)
@@ -90,7 +69,7 @@ def main():
         mask = (np.asarray(Image.open(mask_p).convert("L")) > 127).astype(np.uint8)
         img_s = simulate_grnir(downsample_image(rgb, args.factor))
         mask_s = downsample_mask(mask, args.factor)
-        if mask_s.mean() < 0.002:  # nearly empty tile: keep a few, drop most
+        if mask_s.mean() < 0.002:
             if rng.random() > 0.1:
                 skipped += 1
                 continue

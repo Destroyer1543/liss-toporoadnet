@@ -1,11 +1,3 @@
-"""Precompute topology targets (skel/width/aff) into each tile .npz once.
-
-Rewrites tile files in the scene dirs with extra keys: skel (uint8), width
-(float16), aff (uint8). NpzTileDataset uses them when present instead of
-recomputing per epoch (which cost ~12 ms/tile => ~4 min/epoch single-threaded).
-Multiprocessing over plain files — no torch, no shm.
-"""
-
 import pathlib
 import sys
 from multiprocessing import Pool
@@ -15,7 +7,7 @@ import numpy as np
 sys.path.insert(0, str(pathlib.Path(__file__).resolve().parent.parent / "src"))
 from targets import make_targets
 
-ROOT = pathlib.Path("/data/road_liss4/liss4_tiles")
+ROOT = pathlib.Path("data/liss4_tiles")
 
 
 def process(path):

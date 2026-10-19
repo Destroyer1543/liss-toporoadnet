@@ -1,18 +1,3 @@
-"""Two-tier test-set evaluation for every trained checkpoint.
-
-Tier-1 (all-OSM): metrics vs the tile's stored OSM mask (all classes).
-Tier-2 (visible-roads): metrics vs major-class mask from scripts/major_masks.py,
-with the 'ignore' region (minor/invisible OSM roads) excluded from GT and from
-false-positive counting.
-
-Metrics per tier: IoU, F1, precision, recall, clDice, APLS_r, junction recall.
-Runs on the held-out TEST split (scenes never seen in training).
-
-Usage:
-  python scripts/evaluate_twotier.py --gpu 1 [--graph-items 250]
-  # add --runs exp15_toporoad_full,exp16_unet_full to restrict
-"""
-
 import argparse
 import json
 import pathlib
@@ -27,8 +12,8 @@ import torch
 from graph_metrics import apls_raster, junction_recall
 from metrics import cldice_metric, raster_metrics
 
-TILES = pathlib.Path("/data/road_liss4/liss4_tiles/test")
-EVAL_MASKS = pathlib.Path("/data/road_liss4/eval_masks")
+TILES = pathlib.Path("data/liss4_tiles/test")
+EVAL_MASKS = pathlib.Path("data/eval_masks")
 RUNS = pathlib.Path(__file__).resolve().parent.parent / "runs"
 EPS = 1e-6
 
@@ -37,18 +22,20 @@ def build_model(name, device, cfg=None):
     if name == "toporoad":
         from model import LISSTopoRoadNet
         cfg = cfg or {}
-        # ablation checkpoints have different architectures — honor the flags
         return LISSTopoRoadNet(
+            c4=cfg.get("c4", 64), c8=cfg.get("c8", 128), c16=cfg.get("c16", 256), dec_ch=cfg.get("dec_ch", 48),
             use_spectral_stem=not cfg.get("no_spectral_stem", False),
             use_topology_heads=not cfg.get("no_topology_heads", False),
             use_reconstruction=not cfg.get("no_reconstruction", False),
+            drop_topology_heads=cfg.get("drop_topology_heads", False),
+            hr_refine=cfg.get("hr_refine", False), learned_down2=cfg.get("learned_down2", False),
+            sep_heads=cfg.get("sep_heads", False),
         ).to(device)
     from baselines import BASELINES
     return BASELINES[name]().to(device)
 
 
 def raster_with_ignore(prob, gt, ignore, thr=0.5):
-    """confusion counts excluding ignore pixels."""
     keep = ignore < 0.5
     p = (prob >= thr) & keep
     t = (gt >= 0.5) & keep
@@ -77,7 +64,8 @@ def parse_tile(name):
 def main():
     ap = argparse.ArgumentParser()
     ap.add_argument("--gpu", type=int, default=1)
-    ap.add_argument("--graph-items", type=int, default=250)
+    ap.add_argument("--graph-items", type=int, default=0,
+                    help="score graph metrics on the first N tiles only; 0 = all tiles (default)")
     ap.add_argument("--runs", default=None, help="comma list; default = all runs with best.pt")
     ap.add_argument("--thr", type=float, default=0.5)
     args = ap.parse_args()
@@ -119,15 +107,13 @@ def main():
                 major, ignore = emasks[scene]
                 mj = major[y:y + tile, x:x + tile]
                 ig = ignore[y:y + tile, x:x + tile]
-                if mj.shape != gt_all.shape:  # edge tile mismatch, skip
+                if mj.shape != gt_all.shape:
                     continue
                 prob = torch.sigmoid(model(img)["fused_logit"])[0, 0].float().cpu().numpy()
                 zero_ig = np.zeros_like(ig)
-                # tier 1: all-OSM
                 acc[1].append(raster_with_ignore(prob, gt_all, zero_ig, args.thr))
-                # tier 2: visible only, ignore minor roads
                 acc[2].append(raster_with_ignore(prob, mj, ig, args.thr))
-                if gcount < args.graph_items:
+                if args.graph_items <= 0 or gcount < args.graph_items:
                     cl[1].append(cldice_metric(prob[None, None], gt_all[None, None], args.thr))
                     prob2 = prob * (ig < 0.5)
                     cl[2].append(cldice_metric(prob2[None, None], (mj * (ig < 0.5))[None, None], args.thr))

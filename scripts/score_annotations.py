@@ -1,11 +1,7 @@
-"""Score human road SHADING vs OSM GT -> recall-vs-width observability curve.
-Reads the backend's submissions/ dir (one <student>.jsonl per annotator, one tile per line).
-Usage: python scripts/score_annotations.py annotation/submissions
-"""
 import sys, json, base64, pathlib, numpy as np
 from scipy.ndimage import distance_transform_edt, zoom
 
-GT = pathlib.Path("/data/road_liss4/annot_gt")   # T00..T23.npy (256x256 binary OSM)
+GT = pathlib.Path("data/annot_gt")
 
 def unpack(mask_b64, Mres):
     raw = base64.b64decode(mask_b64)
@@ -24,15 +20,13 @@ def main(subdir):
     students = {r.get("student") for r in recs}
     print(f"{len(recs)} tile-annotations from {len(students)} students")
 
-    per_tile = {}   # tile id -> {cat, hits:[mask,...]}
+    per_tile = {}
     for r in recs:
         t = r["tile"]; Mres = r.get("res", 128)
         hm = np.zeros((256,256), bool) if t["noRoads"] else zoom(unpack(t["mask"], Mres).astype(float), 256/Mres, order=0) > 0.5
         per_tile.setdefault(t["id"], {"cat": t["cat"], "hits": []})["hits"].append(hm)
 
-    # roads at 5.8 m are 1-4 px wide, so bin finely (px). Primary result is the
-    # per-CLASS recall below (highway/major/minor = OSM importance); width curve is secondary.
-    width_bins = [(0,1.5),(1.5,2.5),(2.5,4),(4,999)]   # px @5.8m -> ~<9m,9-15,15-23,>23
+    width_bins = [(0,1.5),(1.5,2.5),(2.5,4),(4,999)]
     hit={b:0 for b in width_bins}; tot={b:0 for b in width_bins}
     cat_hit={}; cat_tot={}
     for tid, info in per_tile.items():

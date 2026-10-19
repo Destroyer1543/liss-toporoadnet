@@ -1,13 +1,4 @@
 #!/usr/bin/env python3
-"""Road-observability annotation server (Python stdlib only, no pip installs).
-
-Run:   python3 server.py            # listens on 0.0.0.0:8000
-       python3 server.py 9000       # custom port
-Then share  http://<this-machine-ip>:8000  with your annotators.
-
-Serves index.html + tiles.json, and receives per-tile submissions at POST /submit,
-appending each to submissions/<student>.jsonl so partial sessions are never lost.
-"""
 import sys, json, re, pathlib, datetime
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 
@@ -63,7 +54,7 @@ class H(BaseHTTPRequestHandler):
         self._send(200, json.dumps({"ok": True}))
 
     def log_message(self, *a):
-        pass  # quiet
+        pass
 
 
 if __name__ == "__main__":

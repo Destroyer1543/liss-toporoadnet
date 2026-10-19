@@ -1,15 +1,3 @@
-"""Bhoonidhi API fetcher for LISS-IV L2 scenes (plan_new.md §SSH-first pipeline).
-
-Needs: BHOONIDHI_USER / BHOONIDHI_PASS env vars, and the server's public IP
-whitelisted by NRSC. Respects documented limits: 20 auth/hr, 3 searches/s,
-<=3 concurrent downloads. Downloads only Online=Y products.
-
-Usage:
-  export BHOONIDHI_USER=... BHOONIDHI_PASS=...
-  python scripts/bhoonidhi_fetch.py --aoi 77.40 28.55 77.90 28.95 \
-      --start 2023-01-01 --end 2026-12-31 --out /data/road_liss4/raw --dry-run
-"""
-
 import argparse
 import json
 import os
@@ -93,7 +81,7 @@ def main():
         with urllib.request.urlopen(req, timeout=600) as r, open(dest, "wb") as fh:
             while chunk := r.read(1 << 20):
                 fh.write(chunk)
-        time.sleep(1)  # sequential: stays well under the 3-concurrent limit
+        time.sleep(1)
 
 
 if __name__ == "__main__":

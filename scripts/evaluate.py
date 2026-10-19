@@ -1,10 +1,3 @@
-"""Evaluate a checkpoint on a split with full metrics (raster + clDice + graph).
-
-Usage:
-  python scripts/evaluate.py --ckpt runs/exp10_toporoad_topolight/best.pt \
-      --data-root /data/road_liss4/proxy --split test [--model toporoad] [--gpu 1]
-"""
-
 import argparse
 import json
 import pathlib

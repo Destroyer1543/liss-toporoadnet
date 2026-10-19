@@ -1,17 +1,9 @@
-"""LISS-TopoRoadNet: spectral stem + dual-path encoder + topology decoder.
-
-Designed for 3-band (G, R, NIR) medium-resolution imagery where roads are
-~1 pixel wide. See plan_new.md for the method description.
-"""
-
 import torch
 import torch.nn as nn
 import torch.nn.functional as F
 
 EPS = 1e-6
 
-
-# ---------------------------------------------------------------- building blocks
 
 class ConvBNAct(nn.Module):
     def __init__(self, cin, cout, k=3, s=1, d=1, groups=1):
@@ -26,7 +18,6 @@ class ConvBNAct(nn.Module):
 
 
 class DWSepResBlock(nn.Module):
-    """Depthwise-separable residual block with optional dilation."""
 
     def __init__(self, ch, d=1):
         super().__init__()
@@ -65,10 +56,7 @@ class ChannelAttention(nn.Module):
         return x * w[:, :, None, None]
 
 
-# ---------------------------------------------------------------- spectral stem
-
 class SpectralStem(nn.Module):
-    """Augment G,R,NIR with NDVI / Igr / Imean, then learn a spectral mixer."""
 
     def __init__(self, out_ch=32):
         super().__init__()
@@ -92,10 +80,7 @@ class SpectralStem(nn.Module):
         return self.res(self.attn(f))
 
 
-# ---------------------------------------------------------------- dual-path encoder
-
 class BiFusion(nn.Module):
-    """One round of bidirectional fusion across 1/4, 1/8, 1/16 features."""
 
     def __init__(self, chs):
         super().__init__()
@@ -121,12 +106,10 @@ class DualPathEncoder(nn.Module):
     def __init__(self, in_ch=32, c4=64, c8=128, c16=256, n_fusion=2):
         super().__init__()
         self.down4 = nn.Sequential(ResBlock(in_ch, c4 // 2, s=2), ResBlock(c4 // 2, c4, s=2))
-        # high-resolution path: stays at 1/4, dilated depthwise-separable blocks
         self.hr = nn.Sequential(
             DWSepResBlock(c4, d=1), DWSepResBlock(c4, d=2), DWSepResBlock(c4, d=3),
             DWSepResBlock(c4, d=1), DWSepResBlock(c4, d=2), DWSepResBlock(c4, d=3),
         )
-        # context path: 1/8 and 1/16
         self.down8 = nn.Sequential(ResBlock(c4, c8, s=2), ResBlock(c8, c8))
         self.down16 = nn.Sequential(ResBlock(c8, c16, s=2), ResBlock(c16, c16))
         self.fusions = nn.ModuleList([BiFusion((c4, c8, c16)) for _ in range(n_fusion)])
@@ -141,21 +124,29 @@ class DualPathEncoder(nn.Module):
         return f4, f8, f16
 
 
-# ---------------------------------------------------------------- decoder + heads
-
 class TopologyDecoder(nn.Module):
-    def __init__(self, stem_ch=32, c4=64, c8=128, c16=256, dec_ch=48):
+
+    def __init__(self, stem_ch=32, c4=64, c8=128, c16=256, dec_ch=48, hr_refine=False, learned_down2=False,
+                 sep_heads=False):
         super().__init__()
+        self.hr_refine, self.learned_down2, self.sep_heads = hr_refine, learned_down2, sep_heads
+        if hr_refine:
+            self.refine1 = ResBlock(dec_ch, dec_ch)
+        if learned_down2:
+            self.down2 = nn.Sequential(ConvBNAct(stem_ch, stem_ch, s=2), DWSepResBlock(stem_ch))
+        if sep_heads:
+            self.branch_mask = ConvBNAct(dec_ch, dec_ch)
+            self.branch_topo = ConvBNAct(dec_ch, dec_ch)
         self.lat8 = nn.Conv2d(c8, c4, 1, bias=False)
         self.lat16 = nn.Conv2d(c16, c4, 1, bias=False)
         self.merge4 = ResBlock(c4, c4)
-        self.up2 = ResBlock(c4 + stem_ch, dec_ch)   # after upsample to 1/2 (stem is full-res, pooled)
+        self.up2 = ResBlock(c4 + stem_ch, dec_ch)
         self.up1 = ResBlock(dec_ch + stem_ch, dec_ch)
         self.head_mask = nn.Conv2d(dec_ch, 1, 1)
         self.head_skel = nn.Conv2d(dec_ch, 1, 1)
         self.head_width = nn.Conv2d(dec_ch, 1, 1)
         self.head_aff = nn.Conv2d(dec_ch, 8, 1)
-        self.head_aux = nn.Conv2d(c4, 1, 1)  # deep supervision at 1/4 scale
+        self.head_aux = nn.Conv2d(c4, 1, 1)
 
     def forward(self, stem, f4, f8, f16):
         h, w = f4.shape[-2:]
@@ -165,30 +156,27 @@ class TopologyDecoder(nn.Module):
         f = self.merge4(f)
         aux_logit = self.head_aux(f)
         f = F.interpolate(f, scale_factor=2, mode="bilinear", align_corners=False)
-        stem_half = F.avg_pool2d(stem, 2)
+        stem_half = self.down2(stem) if self.learned_down2 else F.avg_pool2d(stem, 2)
         f = self.up2(torch.cat([f, stem_half], dim=1))
         f = F.interpolate(f, scale_factor=2, mode="bilinear", align_corners=False)
         f = self.up1(torch.cat([f, stem], dim=1))
+        if self.hr_refine:
+            f = self.refine1(f)
+        fm = self.branch_mask(f) if self.sep_heads else f
+        ft = self.branch_topo(f) if self.sep_heads else f
         return {
-            "mask_logit": self.head_mask(f),
-            "skel_logit": self.head_skel(f),
-            "width": F.softplus(self.head_width(f)) + 0.5,  # half-width in px, >= 0.5
-            "aff_logit": self.head_aff(f),
+            "mask_logit": self.head_mask(fm),
+            "skel_logit": self.head_skel(ft),
+            "width": F.softplus(self.head_width(ft)) + 0.5,
+            "aff_logit": self.head_aff(ft),
             "aux_logit": aux_logit,
         }
 
 
-# ---------------------------------------------------------------- reconstruction
-
 def reconstruct_mask(p_skel, width, k=9):
-    """Differentiable width-aware dilation of the predicted skeleton.
-
-    M_rec(p) = max_{q in KxK window} P_s(q) * exp(-|p-q|^2 / (2 W(q)^2)).
-    Local window instead of global max: at 5.8 m/px, half-widths are <= ~3 px.
-    """
     b, _, h, w = p_skel.shape
     pad = k // 2
-    ps_u = F.unfold(p_skel, k, padding=pad)              # B, k*k, H*W
+    ps_u = F.unfold(p_skel, k, padding=pad)
     w_u = F.unfold(width, k, padding=pad)
     dy, dx = torch.meshgrid(
         torch.arange(-pad, pad + 1, device=p_skel.device, dtype=p_skel.dtype),
@@ -200,25 +188,25 @@ def reconstruct_mask(p_skel, width, k=9):
     return contrib.max(dim=1).values.view(b, 1, h, w)
 
 
-# ---------------------------------------------------------------- full model
-
 class LISSTopoRoadNet(nn.Module):
-    """Ablation switches: use_spectral_stem, use_topology_heads, use_reconstruction."""
 
     def __init__(self, stem_ch=32, c4=64, c8=128, c16=256, dec_ch=48, recon_k=9,
-                 use_spectral_stem=True, use_topology_heads=True, use_reconstruction=True):
+                 use_spectral_stem=True, use_topology_heads=True, use_reconstruction=True,
+                 drop_topology_heads=False, hr_refine=False, learned_down2=False, sep_heads=False):
         super().__init__()
         self.use_topology_heads = use_topology_heads
-        self.use_reconstruction = use_reconstruction and use_topology_heads
+        self.drop_topology_heads = drop_topology_heads
+        self.use_reconstruction = use_reconstruction and use_topology_heads and not drop_topology_heads
         self.recon_k = recon_k
         if use_spectral_stem:
             self.stem = SpectralStem(stem_ch)
-        else:  # plain conv stem on raw 3 bands (ablation)
+        else:
             self.stem = nn.Sequential(
                 ConvBNAct(3, stem_ch), DWSepResBlock(stem_ch), DWSepResBlock(stem_ch)
             )
         self.encoder = DualPathEncoder(stem_ch, c4, c8, c16)
-        self.decoder = TopologyDecoder(stem_ch, c4, c8, c16, dec_ch)
+        self.decoder = TopologyDecoder(stem_ch, c4, c8, c16, dec_ch, hr_refine=hr_refine,
+                                       learned_down2=learned_down2, sep_heads=sep_heads)
         self.alpha = nn.Parameter(torch.tensor(1.0))
         self.beta = nn.Parameter(torch.tensor(1.0))
 
@@ -230,12 +218,13 @@ class LISSTopoRoadNet(nn.Module):
             p_skel = torch.sigmoid(out["skel_logit"])
             m_rec = reconstruct_mask(p_skel, out["width"], k=self.recon_k)
             out["m_rec"] = m_rec
-            # NOTE (deviation from plan formula): fusing probabilities inside a sigmoid
-            # bounds P away from 0; we fuse in logit space instead, same intent.
             rec_logit = torch.logit(m_rec.clamp(1e-4, 1 - 1e-4))
             out["fused_logit"] = self.alpha * out["mask_logit"] + self.beta * rec_logit
         else:
             out["fused_logit"] = out["mask_logit"]
+        if self.drop_topology_heads:
+            for k in ("skel_logit", "width", "aff_logit"):
+                out.pop(k, None)
         return out
 
 

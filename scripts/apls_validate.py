@@ -1,10 +1,3 @@
-"""Validate the raster APLS_r against a standard graph-based APLS.
-
-Graph APLS builds a junction-node graph (nodes = skeleton pixels of degree != 2,
-edges = the skeleton paths between them, weighted by pixel length), which is the
-standard APLS formulation, and compares shortest-path lengths between sampled node
-pairs. We correlate it with APLS_r on held-out test tiles and plot the result.
-"""
 import sys, pathlib, numpy as np
 sys.path.insert(0, "src")
 import torch, networkx as nx
@@ -19,7 +12,6 @@ K8 = np.array([[1, 1, 1], [1, 0, 1], [1, 1, 1]])
 
 
 def skel_to_graph(skel):
-    """junction-node graph: nodes = skeleton pixels with degree != 2, edges = traced paths."""
     deg = convolve(skel.astype(int), K8, mode="constant") * skel
     node_mask = skel & (deg != 2)
     ys, xs = np.nonzero(node_mask)
@@ -106,14 +98,14 @@ def main():
     m = LISSTopoRoadNet().to(DEV)
     m.load_state_dict(torch.load("runs/exp15_toporoad_full/best.pt", map_location=DEV,
                                  weights_only=False)["model"]); m.eval()
-    tiles = sorted(pathlib.Path("/data/road_liss4/liss4_tiles/test").glob("*.npz"))
+    tiles = sorted(pathlib.Path("data/liss4_tiles/test").glob("*.npz"))
     rng = np.random.default_rng(0)
     idx = rng.permutation(len(tiles))
     rr, gg = [], []
     n = 0
     for k in idx:
         d = np.load(tiles[k]); img = d["image"].astype(np.float32); gt = d["mask"].astype(bool)
-        if gt.mean() < 0.03:          # road-rich tiles give lower-variance per-tile APLS
+        if gt.mean() < 0.03:
             continue
         with torch.no_grad():
             pr = (torch.sigmoid(m(torch.from_numpy(img[None]).to(DEV))["fused_logit"])[0, 0] > 0.5).cpu().numpy()
@@ -131,7 +123,7 @@ def main():
         rho = spearmanr(rr, gg).statistic
     except Exception:
         pass
-    np.savez("/data/road_liss4/apls_corr.npz", aplsr=rr, aplsg=gg, pearson=r, spearman=rho)
+    np.savez("data/apls_corr.npz", aplsr=rr, aplsg=gg, pearson=r, spearman=rho)
     print(f"n={n}  Pearson r={r:.3f}  Spearman={rho:.3f}  "
           f"APLSr mean={rr.mean():.3f} graphAPLS mean={gg.mean():.3f}")
 

@@ -1,9 +1,3 @@
-"""Config-driven trainer for LISS-TopoRoadNet and ablations.
-
-Usage (from src/):
-  python train.py --run-dir ../runs/exp00_smoke --epochs 2 --n-train 64 --gpu 1
-"""
-
 import argparse
 import csv
 import json
@@ -14,10 +8,7 @@ import numpy as np
 import torch
 from torch.utils.data import DataLoader
 
-# /dev/shm is only 2 GB on this shared box; default shm sharing OOMs with 256px tiles
 torch.multiprocessing.set_sharing_strategy("file_system")
-# shared 96-core box: default ~48 intraop threads/process thrashes when several
-# trainings run; cap our footprint
 torch.set_num_threads(int(os.environ.get("TORCH_THREADS", "8")))
 
 from data import SyntheticLISSRoads
@@ -43,9 +34,8 @@ def parse_args():
     p.add_argument("--seed", type=int, default=0)
     p.add_argument("--workers", type=int, default=4)
     p.add_argument("--model", default="toporoad",
-                   choices=["toporoad", "unet", "dlinknet", "roadformer"],
+                   choices=["toporoad", "unet", "dlinknet", "roadformer", "roadformer_s2", "unet_ds"],
                    help="baselines train with the region loss only (their standard setup)")
-    # loss weights (defaults = Day-0 initial guesses)
     p.add_argument("--l-cldice", type=float, default=0.5)
     p.add_argument("--l-skel", type=float, default=1.0)
     p.add_argument("--l-width", type=float, default=0.2)
@@ -64,10 +54,26 @@ def parse_args():
                    help="band ablation: comma channel indices to zero (0=G,1=R,2=NIR)")
     p.add_argument("--init", default=None,
                    help="path to mae_encoder.pt: init stem+encoder from MAE pretraining")
-    # ablation switches
+    p.add_argument("--baseline-topo-loss", action="store_true",
+                   help="rebuttal control: baselines also get soft-clDice after warmup "
+                        "(their outputs have no skel/width/aff heads, so only clDice applies)")
     p.add_argument("--no-spectral-stem", action="store_true")
     p.add_argument("--no-topology-heads", action="store_true")
+    p.add_argument("--drop-topology-heads", action="store_true",
+                   help="true topology-head ablation: no centreline/width/affinity outputs or losses")
     p.add_argument("--no-reconstruction", action="store_true")
+    p.add_argument("--tversky-alpha", type=float, default=0.7, help="focal-Tversky FN weight (region loss)")
+    p.add_argument("--tversky-beta", type=float, default=0.3, help="focal-Tversky FP weight (region loss)")
+    p.add_argument("--const-lr", action="store_true", help="constant LR (continuation fine-tunes) instead of cosine")
+    p.add_argument("--accum", type=int, default=1,
+                   help="gradient accumulation micro-batches per optimizer step (same effective batch, less memory)")
+    p.add_argument("--c4", type=int, default=64, help="encoder width at 1/4 (track D capacity-matched: 90)")
+    p.add_argument("--c8", type=int, default=128)
+    p.add_argument("--c16", type=int, default=256)
+    p.add_argument("--dec-ch", type=int, default=48)
+    p.add_argument("--hr-refine", action="store_true", help="track C: full-resolution refinement ResBlock")
+    p.add_argument("--learned-down2", action="store_true", help="track C: learned stride-2 stem skip")
+    p.add_argument("--sep-heads", action="store_true", help="track C: separate mask / topology head branches")
     return p.parse_args()
 
 
@@ -102,12 +108,8 @@ def main():
         from data import NpzTileDataset
         import glob as _glob
         zb = [int(x) for x in args.zero_bands.split(",")] if args.zero_bands else None
-        # RAM-preload + workers 0: this box's 2 GB shared /dev/shm makes worker
-        # IPC unreliable, so datasets live in main-process RAM instead.
         print("preloading tiles into RAM...", flush=True)
         if args.holdout_scene:
-            # scene-level cross-validation: pool all tiles, hold out one or more
-            # scenes (comma-separated prefixes), train on the rest at equal budget.
             holds = [h for h in args.holdout_scene.split(",") if h]
             allp = []
             for sub in ("train", "val", "test"):
@@ -138,8 +140,6 @@ def main():
     else:
         train_ds = SyntheticLISSRoads(n=args.n_train, size=args.tile, seed=args.seed)
         val_ds = SyntheticLISSRoads(n=args.n_val, size=args.tile, seed=args.seed + 999)
-    # /dev/shm on this box is 2 GB and shared with other users' jobs: keep the
-    # number of in-flight batches minimal (prefetch 1) rather than raising workers.
     train_dl = DataLoader(train_ds, batch_size=args.batch_size, shuffle=True,
                           num_workers=args.workers, pin_memory=False, drop_last=True,
                           prefetch_factor=1 if args.workers > 0 else None)
@@ -148,9 +148,12 @@ def main():
 
     if args.model == "toporoad":
         model = LISSTopoRoadNet(
+            c4=args.c4, c8=args.c8, c16=args.c16, dec_ch=args.dec_ch,
             use_spectral_stem=not args.no_spectral_stem,
             use_topology_heads=not args.no_topology_heads,
             use_reconstruction=not args.no_reconstruction,
+            drop_topology_heads=args.drop_topology_heads,
+            hr_refine=args.hr_refine, learned_down2=args.learned_down2, sep_heads=args.sep_heads,
         ).to(device)
     else:
         from baselines import BASELINES
@@ -161,7 +164,6 @@ def main():
         model.encoder.load_state_dict(ck["encoder"])
         print(f"initialized stem+encoder from {args.init}", flush=True)
     if args.transfer_init:
-        # cross-resolution transfer: load the FULL proxy-trained model (all heads)
         ck = torch.load(args.transfer_init, map_location=device, weights_only=False)
         sd = ck.get("model", ck)
         missing, unexpected = model.load_state_dict(sd, strict=False)
@@ -172,11 +174,12 @@ def main():
     criterion = TopoRoadLoss(l_cldice=args.l_cldice, l_skel=args.l_skel,
                              l_width=args.l_width, l_aff=args.l_aff, l_cons=args.l_cons,
                              l_aux=args.l_aux, l_blob=args.l_blob,
-                             skel_pos_weight=args.skel_pos_weight)
+                             skel_pos_weight=args.skel_pos_weight,
+                             tv_alpha=args.tversky_alpha, tv_beta=args.tversky_beta)
     opt = torch.optim.AdamW(model.parameters(), lr=args.lr, weight_decay=args.weight_decay)
-    sched = torch.optim.lr_scheduler.CosineAnnealingLR(opt, T_max=args.epochs * len(train_dl))
+    sched = (torch.optim.lr_scheduler.LambdaLR(opt, lambda step: 1.0) if args.const_lr else
+             torch.optim.lr_scheduler.CosineAnnealingLR(opt, T_max=args.epochs * len(train_dl) // args.accum))
 
-    # auto-resume: run dirs are per-experiment, so a last.pt here is ours
     start_epoch = 0
     best_cldice = -1.0
     resume_path = os.path.join(args.run_dir, "last.pt")
@@ -198,27 +201,29 @@ def main():
     logger.writerow(["epoch", "stage", "loss", "iou", "f1", "cldice", "lr", "sec"])
 
     for epoch in range(start_epoch, args.epochs):
-        if args.model != "toporoad":
-            stage = "warmup"  # baselines: region loss only, no topology terms
+        if args.model != "toporoad" and not args.baseline_topo_loss:
+            stage = "warmup"
         else:
             stage = "warmup" if epoch < args.warmup_epochs else "full"
         t0 = time.time()
         ep_loss, n_it = 0.0, 0
-        for batch in train_dl:
+        for it, batch in enumerate(train_dl):
             batch = {k: v.to(device, non_blocking=True) for k, v in batch.items()}
             with torch.autocast("cuda", dtype=torch.bfloat16):
                 out = model(batch["image"])
-            # loss math in fp32 outside autocast: bf16 rounding in the topology
-            # losses (pow/log/eps-divisions) was a recurring inf/NaN source
             out = {k: v.float() for k, v in out.items()}
             loss, parts = criterion(out, batch, stage=stage)
             if not torch.isfinite(loss):
-                # bad batch under bf16: skip instead of poisoning the weights
                 opt.zero_grad(set_to_none=True)
                 print(f"WARN ep{epoch}: non-finite loss, batch skipped", flush=True)
                 continue
-            opt.zero_grad(set_to_none=True)
-            loss.backward()
+            if it % args.accum == 0:
+                opt.zero_grad(set_to_none=True)
+            (loss / args.accum).backward()
+            if (it + 1) % args.accum != 0:
+                ep_loss += loss.item()
+                n_it += 1
+                continue
             gnorm = torch.nn.utils.clip_grad_norm_(model.parameters(), 5.0)
             if not torch.isfinite(gnorm):
                 opt.zero_grad(set_to_none=True)
@@ -241,7 +246,6 @@ def main():
             best_cldice = m["cldice"]
             torch.save({"model": model.state_dict(), "epoch": epoch, "metrics": m},
                        os.path.join(args.run_dir, "best.pt"))
-        # resumable checkpoint every epoch (box has killed jobs mid-run before)
         tmp = os.path.join(args.run_dir, "last.pt.tmp")
         torch.save({"model": model.state_dict(), "opt": opt.state_dict(),
                     "sched": sched.state_dict(), "epoch": epoch,

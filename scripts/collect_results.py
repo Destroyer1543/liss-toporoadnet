@@ -1,8 +1,3 @@
-"""Collect best-epoch metrics from every runs/expNN_*/log.csv into one table.
-
-Usage: python scripts/collect_results.py [--sort cldice]
-"""
-
 import argparse
 import csv
 import json
@@ -14,7 +9,7 @@ RUNS = pathlib.Path(__file__).resolve().parent.parent / "runs"
 def _num(row, key):
     try:
         return float(row.get(key, ""))
-    except (TypeError, ValueError):  # repeated header lines from restarts, nan, etc.
+    except (TypeError, ValueError):
         return None
 
 

@@ -1,8 +1,3 @@
-"""End-to-end smoke test: targets, model shapes, losses, and a short overfit
-on 4 synthetic chips to verify the loss actually decreases. Small footprint
-(shared GPU). Run:  python scripts/smoke_test.py --gpu 1
-"""
-
 import argparse
 import sys
 import time
@@ -37,7 +32,8 @@ def main():
     out = model(batch["image"])
     for k, v in out.items():
         print(f"  {k}: {tuple(v.shape)}")
-        assert v.shape[-2:] == batch["image"].shape[-2:], f"{k} wrong spatial size"
+        expect = tuple(n // 4 for n in batch["image"].shape[-2:]) if k == "aux_logit" else tuple(batch["image"].shape[-2:])
+        assert tuple(v.shape[-2:]) == expect, f"{k} wrong spatial size"
 
     criterion = TopoRoadLoss()
     opt = torch.optim.AdamW(model.parameters(), lr=1e-3)

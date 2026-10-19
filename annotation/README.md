@@ -24,7 +24,7 @@ machine (where the ground truth lives) and run:
     python3 scripts/score_annotations.py annotation/submissions
 
 Prints human recall vs road width + per-class recall (highway/major/minor). Ground truth:
-`/data/road_liss4/annot_gt/` (T00-T23, never shown to students).
+`data/annot_gt/` (T00-T23, never shown to students).
 
 ## Expected result
 Recall high on highway/major tiles, collapsing on minor tiles -> a human "observability

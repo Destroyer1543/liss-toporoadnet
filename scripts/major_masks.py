@@ -1,17 +1,3 @@
-"""Build 'visible-roads' (major-class) GT + ignore masks for the TEST scenes.
-
-Tier-2 evaluation (see RESEARCH.md, user obs 2026-07-19): sub-resolution OSM
-tracks are invisible at 5.8 m and must not be scored. We re-rasterize each
-test scene twice:
-  major_mask  = motorway..tertiary + wide unclassified/residential (visible)
-  minor_mask  = everything else in OSM_WIDTHS (track/service/path/link/...)
-The ignore region = minor_mask AND NOT major_mask: predictions there are neither
-rewarded nor penalized in tier-2. Reads bands via /vsizip (no extraction).
-
-Output: /data/road_liss4/eval_masks/<scene>.npz {major (H,W uint8), ignore (H,W uint8)}
-Usage: python scripts/major_masks.py
-"""
-
 import pathlib
 import sys
 import zipfile
@@ -22,17 +8,14 @@ import rasterio
 sys.path.insert(0, str(pathlib.Path(__file__).resolve().parent))
 from liss4_prepare import OSM_WIDTHS, fetch_osm_roads, rasterize_roads
 
-RAW = pathlib.Path("/data/road_liss4/liss4_raw")
-OUT = pathlib.Path("/data/road_liss4/eval_masks")
-# default: TEST scenes only; pass --all to build for every scene (for major-only training)
+RAW = pathlib.Path("data/liss4_raw")
+OUT = pathlib.Path("data/eval_masks")
 TEST_SCENES = ["R2F24AUG2023064073010100066SSANSTUC00GTDD",
                "RAF23OCT2023035685010100064SSANSTUC00GTDA"]
 ALL_SCENES = sorted(p.stem for p in RAW.glob("*.zip"))
-# "visible at 5.8 m": >= tertiary, plus the wider undesignated classes
 MAJOR = {"motorway", "trunk", "primary", "secondary", "tertiary",
          "motorway_link", "trunk_link", "primary_link", "secondary_link",
          "unclassified", "residential"}
-# stricter "highways only": true arterials, no streets/residential/tertiary
 HIGHWAY = {"motorway", "trunk", "primary", "secondary",
            "motorway_link", "trunk_link", "primary_link", "secondary_link"}
 
@@ -46,7 +29,6 @@ def band2_vsizip(scene):
 def main():
     import sys as _sys
     scenes = ALL_SCENES if "--all" in _sys.argv else TEST_SCENES
-    # --highway-only: stricter arterials-only set, written to a separate dir
     highway_only = "--highway-only" in _sys.argv
     keep = HIGHWAY if highway_only else MAJOR
     out_dir = (RAW.parent / "highway_masks") if highway_only else OUT

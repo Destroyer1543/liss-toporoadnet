@@ -1,14 +1,3 @@
-"""MAE-style self-supervised pretraining for the LISS-TopoRoadNet encoder.
-
-Masks random 16x16 patches of the G/R/NIR input (mask ratio 0.5) and trains
-stem+encoder+light decoder to reconstruct the masked pixels (MSE on masked
-area only). Pretrains on TRAIN-scene tiles only (no test-scene leakage).
-Saves {"stem": ..., "encoder": ...} state dicts for train.py --init.
-
-Usage:
-  python pretrain_mae.py --out ../runs/exp27_mae_pretrain --gpu 1 --epochs 40
-"""
-
 import argparse
 import os
 import time
@@ -32,7 +21,7 @@ class MAENet(nn.Module):
         self.encoder = DualPathEncoder(stem_ch)
         self.dec = nn.Sequential(
             ConvBNAct(c4, c4), nn.Conv2d(c4, 3 * 16, 1), nn.PixelShuffle(4)
-        )  # f4 (1/4 scale) -> 3ch full res
+        )
 
     def forward(self, x):
         f4, _, _ = self.encoder(self.stem(x))
@@ -59,7 +48,7 @@ def main():
     torch.manual_seed(0)
 
     print("preloading train tiles...", flush=True)
-    ds = NpzTileDataset("/data/road_liss4/liss4_tiles/train", size=256,
+    ds = NpzTileDataset("data/liss4_tiles/train", size=256,
                         augment=True, with_topo_targets=False, preload=True)
     dl = DataLoader(ds, batch_size=args.batch_size, shuffle=True,
                     num_workers=0, drop_last=True)

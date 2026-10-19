@@ -1,6 +1,3 @@
-"""Losses: Focal Tversky + Dice (region), soft-clDice (topology), skeleton BCE,
-width Huber (on GT skeleton), affinity BCE, mask/reconstruction consistency."""
-
 import torch
 import torch.nn as nn
 import torch.nn.functional as F
@@ -19,11 +16,8 @@ def focal_tversky_loss(prob, target, alpha=0.7, beta=0.3, gamma=0.75):
     fn = ((1 - prob) * target).sum(dim=(1, 2, 3))
     fp = (prob * (1 - target)).sum(dim=(1, 2, 3))
     tv = (tp + EPS) / (tp + alpha * fn + beta * fp + EPS)
-    # clamp: d/dx x^gamma is infinite at x=0 for gamma<1 (empty-tile batches)
     return ((1 - tv).clamp_min(1e-4) ** gamma).mean()
 
-
-# ------------------------------------------------------------------ soft clDice
 
 def _soft_erode(img):
     return -F.max_pool2d(-img, 3, 1, 1)
@@ -57,15 +51,13 @@ def soft_cldice_loss(prob, target, iters=10):
     return (1 - cl).mean()
 
 
-# ------------------------------------------------------------------ combined
-
 class TopoRoadLoss(nn.Module):
-    """stage='warmup' -> seg loss only; stage='full' -> everything."""
 
     def __init__(self, l_seg=1.0, l_cldice=0.5, l_skel=1.0, l_width=0.2,
                  l_aff=0.5, l_cons=0.3, l_aux=0.4, l_blob=0.0,
-                 skel_pos_weight=20.0, cldice_iters=10):
+                 skel_pos_weight=20.0, cldice_iters=10, tv_alpha=0.7, tv_beta=0.3):
         super().__init__()
+        self.tv_alpha, self.tv_beta = tv_alpha, tv_beta
         self.w = dict(seg=l_seg, cldice=l_cldice, skel=l_skel,
                       width=l_width, aff=l_aff, cons=l_cons, aux=l_aux, blob=l_blob)
         self.skel_pos_weight = skel_pos_weight
@@ -75,19 +67,16 @@ class TopoRoadLoss(nn.Module):
         y = batch["mask"]
         prob = torch.sigmoid(out["fused_logit"])
         losses = {}
-        losses["seg"] = focal_tversky_loss(prob, y) + 0.5 * soft_dice_loss(prob, y)
+        losses["seg"] = focal_tversky_loss(prob, y, self.tv_alpha, self.tv_beta) + 0.5 * soft_dice_loss(prob, y)
         if self.w["blob"] > 0:
-            # anti-blob: penalize road prob in the 2-px band just outside true
-            # roads (dilate(y)\y), where over-wide predictions bleed. Targeted FP.
             y_dil = F.max_pool2d(y, 5, 1, 2)
             band = (y_dil - y).clamp(0, 1)
             denom = band.sum(dim=(1, 2, 3)).clamp_min(1.0)
             losses["blob"] = ((prob * band).sum(dim=(1, 2, 3)) / denom).mean()
         if "aux_logit" in out and self.w["aux"] > 0:
-            # deep supervision at 1/4 scale; max-pool GT so 1-px roads survive
             y4 = F.max_pool2d(y, 4)
             p4 = torch.sigmoid(out["aux_logit"])
-            losses["aux"] = focal_tversky_loss(p4, y4) + 0.5 * soft_dice_loss(p4, y4)
+            losses["aux"] = focal_tversky_loss(p4, y4, self.tv_alpha, self.tv_beta) + 0.5 * soft_dice_loss(p4, y4)
         if stage != "warmup":
             losses["cldice"] = soft_cldice_loss(prob, y, self.cldice_iters)
             if "skel_logit" in out and "skel" in batch:

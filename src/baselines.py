@@ -1,11 +1,3 @@
-"""Baseline models sharing the trainer interface: forward(x) -> {"fused_logit": ...}.
-
-UNet: plain encoder-decoder (the failing reference point).
-DLinkNet: ResNet-style encoder + dilated center block + LinkNet decoder
-(faithful re-implementation at reduced width; no ImageNet weights since our
-input is G/R/NIR, which is itself part of the paper's argument).
-"""
-
 import torch
 import torch.nn as nn
 import torch.nn.functional as F
@@ -19,8 +11,10 @@ def conv_block(cin, cout):
 
 
 class UNet(nn.Module):
-    def __init__(self, in_ch=3, base=32):
+
+    def __init__(self, in_ch=3, base=32, deep_sup=False):
         super().__init__()
+        self.deep_sup = deep_sup
         chs = [base, base * 2, base * 4, base * 8, base * 16]
         self.enc = nn.ModuleList()
         c_prev = in_ch
@@ -33,6 +27,8 @@ class UNet(nn.Module):
             self.ups.append(nn.ConvTranspose2d(chs[i], chs[i - 1], 2, 2))
             self.dec.append(conv_block(chs[i - 1] * 2, chs[i - 1]))
         self.head = nn.Conv2d(chs[0], 1, 1)
+        if deep_sup:
+            self.head_aux = nn.Conv2d(chs[2], 1, 1)
 
     def forward(self, x):
         skips = []
@@ -41,10 +37,16 @@ class UNet(nn.Module):
             if i < len(self.enc) - 1:
                 skips.append(x)
                 x = F.max_pool2d(x, 2)
-        for up, blk, skip in zip(self.ups, self.dec, reversed(skips)):
+        aux = None
+        for j, (up, blk, skip) in enumerate(zip(self.ups, self.dec, reversed(skips))):
             x = up(x)
             x = blk(torch.cat([x, skip], dim=1))
-        return {"fused_logit": self.head(x)}
+            if self.deep_sup and j == 1:
+                aux = self.head_aux(x)
+        out = {"fused_logit": self.head(x)}
+        if aux is not None:
+            out["aux_logit"] = aux
+        return out
 
 
 class _ResLayer(nn.Module):
@@ -74,7 +76,6 @@ class _BasicBlock(nn.Module):
 
 
 class _DecoderBlock(nn.Module):
-    """LinkNet decoder block."""
 
     def __init__(self, cin, cout):
         super().__init__()
@@ -101,7 +102,6 @@ class DLinkNet(nn.Module):
         self.l2 = _ResLayer(c[0], c[1], 2, 2)
         self.l3 = _ResLayer(c[1], c[2], 2, 2)
         self.l4 = _ResLayer(c[2], c[3], 2, 2)
-        # dilated center block (D-LinkNet's key component), parallel-sum of cascades
         self.dil = nn.ModuleList([
             nn.Sequential(nn.Conv2d(c[3], c[3], 3, 1, d, dilation=d, bias=False),
                           nn.BatchNorm2d(c[3]), nn.ReLU(inplace=True))
@@ -132,13 +132,10 @@ class DLinkNet(nn.Module):
         return {"fused_logit": self.head(y)}
 
 
-BASELINES = {"unet": UNet, "dlinknet": DLinkNet}
+BASELINES = {"unet": UNet, "dlinknet": DLinkNet, "unet_ds": lambda in_ch=3: UNet(in_ch=in_ch, deep_sup=True)}
 
-
-# ------------------------------------------------------------ RoadFormer-lite
 
 class _SRAttention(nn.Module):
-    """Efficient self-attention with spatial reduction (SegFormer/PVT style)."""
 
     def __init__(self, dim, heads, sr):
         super().__init__()
@@ -180,15 +177,14 @@ class _TFBlock(nn.Module):
 
 
 class RoadFormerLite(nn.Module):
-    """Compact SegFormer-style hierarchical transformer for road segmentation."""
 
     def __init__(self, in_ch=3, dims=(32, 64, 128, 192), depths=(2, 2, 2, 2),
-                 heads=(1, 2, 4, 8), srs=(8, 4, 2, 1)):
+                 heads=(1, 2, 4, 8), srs=(8, 4, 2, 1), stem_stride=4):
         super().__init__()
         self.stages = nn.ModuleList()
         c_prev = in_ch
         for i, (d, dep, hd, sr) in enumerate(zip(dims, depths, heads, srs)):
-            patch = nn.Conv2d(c_prev, d, 7 if i == 0 else 3, 4 if i == 0 else 2,
+            patch = nn.Conv2d(c_prev, d, 7 if i == 0 else 3, stem_stride if i == 0 else 2,
                               3 if i == 0 else 1)
             blocks = nn.ModuleList([_TFBlock(d, hd, sr) for _ in range(dep)])
             self.stages.append(nn.ModuleList([patch, blocks, nn.LayerNorm(d)]))
@@ -218,3 +214,4 @@ class RoadFormerLite(nn.Module):
 
 
 BASELINES["roadformer"] = RoadFormerLite
+BASELINES["roadformer_s2"] = lambda in_ch=3: RoadFormerLite(in_ch=in_ch, stem_stride=2)

@@ -1,10 +1,3 @@
-"""Aggregate validation of APLS_r against graph APLS across methods.
-
-For each method, compute per-tile APLS_r and graph APLS on the same road-rich test
-tiles, then aggregate. The metric is reported at dataset level, so the test that
-matters is whether the two definitions rank the methods the same way and give close
-aggregate values. We also pool all per-tile pairs for a scatter + Spearman.
-"""
 import sys, pathlib, numpy as np
 sys.path.insert(0, "src")
 import torch
@@ -26,7 +19,7 @@ MODELS = [("Ours", load("exp15_toporoad_full", "topo")),
           ("D-LinkNet", load("exp17_dlinknet_full", "dlinknet")),
           ("RoadFormer", load("exp26_roadformer_full", "roadformer"))]
 
-tiles = sorted(pathlib.Path("/data/road_liss4/liss4_tiles/test").glob("*.npz"))
+tiles = sorted(pathlib.Path("data/liss4_tiles/test").glob("*.npz"))
 rng = np.random.default_rng(0)
 sel = [t for t in tiles if np.load(t)["mask"].mean() >= 0.03]
 sel = [sel[i] for i in rng.permutation(len(sel))[:140]]
@@ -52,7 +45,7 @@ mr = {n: float(np.mean(per_r[n])) for n in names}
 mg = {n: float(np.mean(per_g[n])) for n in names}
 rho = spearmanr(pool_r, pool_g).statistic
 pear = float(np.corrcoef(pool_r, pool_g)[0, 1])
-np.savez("/data/road_liss4/apls_ranking.npz",
+np.savez("data/apls_ranking.npz",
          names=names, mean_r=[mr[n] for n in names], mean_g=[mg[n] for n in names],
          pool_r=np.array(pool_r), pool_g=np.array(pool_g), spearman=rho, pearson=pear)
 print(f"n_tiles={len(sel)}  pooled Spearman={rho:.3f} Pearson={pear:.3f}")

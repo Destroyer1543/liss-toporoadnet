@@ -1,5 +1,3 @@
-"""Raster + topology metrics. Graph metrics (APLS/TOPO) come later (Day 2+)."""
-
 import numpy as np
 from skimage.morphology import skeletonize
 
@@ -7,7 +5,6 @@ EPS = 1e-6
 
 
 def raster_metrics(prob, target, thr=0.5):
-    """prob, target: (N,1,H,W) numpy float. Returns dict of iou/f1/prec/rec."""
     p = (prob >= thr).astype(np.float64)
     t = (target >= 0.5).astype(np.float64)
     tp = (p * t).sum()
@@ -21,7 +18,6 @@ def raster_metrics(prob, target, thr=0.5):
 
 
 def cldice_metric(prob, target, thr=0.5):
-    """Hard clDice over a batch: topology-aware overlap of skeletons."""
     vals = []
     for p1, t1 in zip(prob[:, 0], target[:, 0]):
         p = p1 >= thr

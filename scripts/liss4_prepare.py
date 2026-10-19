@@ -1,20 +1,3 @@
-"""LISS-IV L2 scene → training tiles with OSM-bootstrapped labels.
-
-Per scene zip/dir in /data/road_liss4/liss4_raw/:
-  1. Find the 3 band GeoTIFFs (BAND2=G, BAND3=R, BAND4=NIR) or a 3-band stack.
-  2. Read + percentile-normalize each band to [0,1] (2–98% per scene).
-  3. Fetch OSM roads for the scene footprint via the Overpass API, project to
-     scene CRS, rasterize with width by highway class (bootstrap labels).
-  4. Tile into 256×256 chips (stride 256); save .npz {image, mask} per chip.
-     Chips with zero roads are kept at 10% rate (hard negatives).
-  5. Scene-level split assignment happens later (scripts/make_splits.py) so
-     whole scenes stay in one split (geographic generalization).
-
-Usage:
-  python scripts/liss4_prepare.py --raw /data/road_liss4/liss4_raw --out /data/road_liss4/liss4_tiles
-  python scripts/liss4_prepare.py ... --no-osm   # tiles only (for MAE pretraining corpus)
-"""
-
 import argparse
 import json
 import pathlib
@@ -26,7 +9,6 @@ import zipfile
 import numpy as np
 
 OVERPASS = "https://overpass-api.de/api/interpreter"
-# rasterized full width (meters) per highway class — coarse but fine at 5.8 m/px
 OSM_WIDTHS = {
     "motorway": 20, "trunk": 16, "primary": 12, "secondary": 10,
     "tertiary": 8, "unclassified": 6, "residential": 6, "service": 5,
@@ -45,7 +27,6 @@ def find_band_files(scene_dir):
                 bands[name] = t
     if len(bands) == 3:
         return bands, None
-    # else look for a single multiband stack
     for t in tifs:
         import rasterio
         with rasterio.open(t) as src:
@@ -62,7 +43,7 @@ OVERPASS_MIRRORS = [
 
 def fetch_osm_roads(bounds_wgs84, retries=4):
     import urllib.parse
-    s, w, n, e = bounds_wgs84  # south, west, north, east
+    s, w, n, e = bounds_wgs84
     q = f'[out:json][timeout:180];way["highway"]({s},{w},{n},{e});out geom;'
     body = urllib.parse.urlencode({"data": q}).encode()
     for attempt in range(retries):
@@ -85,7 +66,7 @@ def rasterize_roads(elements, transform, crs, shape):
     from pyproj import Transformer
     from shapely.geometry import LineString
     tfm = Transformer.from_crs("EPSG:4326", crs, always_xy=True)
-    px_size = abs(transform.a)  # meters per pixel
+    px_size = abs(transform.a)
     shapes = []
     for el in elements:
         hw = el.get("tags", {}).get("highway", "")
@@ -96,7 +77,7 @@ def rasterize_roads(elements, transform, crs, shape):
             continue
         xs, ys = tfm.transform(*zip(*pts))
         line = LineString(zip(xs, ys))
-        half_w = max(OSM_WIDTHS[hw] / 2.0, px_size * 0.55)  # >= ~1 px final width
+        half_w = max(OSM_WIDTHS[hw] / 2.0, px_size * 0.55)
         shapes.append(line.buffer(half_w))
     if not shapes:
         return np.zeros(shape, dtype=np.uint8)
@@ -124,7 +105,7 @@ def process_scene(scene_dir, out_dir, tile=256, do_osm=True, keep_empty=0.1):
     else:
         with rasterio.open(stack) as src:
             data = src.read()
-            arrs = [data[0], data[1], data[2]]  # assume G,R,NIR band order; VERIFY per scene
+            arrs = [data[0], data[1], data[2]]
             transform, crs, bnds = src.transform, src.crs, src.bounds
     img = np.stack([normalize(a) for a in arrs])
     h, w = img.shape[1:]
@@ -146,7 +127,7 @@ def process_scene(scene_dir, out_dir, tile=256, do_osm=True, keep_empty=0.1):
     for y in range(0, h - tile + 1, tile):
         for x in range(0, w - tile + 1, tile):
             chip = img[:, y:y + tile, x:x + tile]
-            if (chip.sum(0) == 0).mean() > 0.3:  # nodata border
+            if (chip.sum(0) == 0).mean() > 0.3:
                 continue
             m = mask[y:y + tile, x:x + tile] if mask is not None else None
             if m is not None and m.mean() < 0.001 and rng.random() > keep_empty:
@@ -162,14 +143,13 @@ def process_scene(scene_dir, out_dir, tile=256, do_osm=True, keep_empty=0.1):
 
 def main():
     ap = argparse.ArgumentParser()
-    ap.add_argument("--raw", default="/data/road_liss4/liss4_raw")
-    ap.add_argument("--out", default="/data/road_liss4/liss4_tiles")
+    ap.add_argument("--raw", default="data/liss4_raw")
+    ap.add_argument("--out", default="data/liss4_tiles")
     ap.add_argument("--tile", type=int, default=256)
     ap.add_argument("--no-osm", action="store_true")
     args = ap.parse_args()
     raw = pathlib.Path(args.raw)
     out = pathlib.Path(args.out)
-    # unzip any new scene zips in place
     for z in raw.glob("*.zip"):
         mark = raw / (z.stem + ".extracted")
         if not mark.exists():

@@ -1,11 +1,3 @@
-"""Datasets.
-
-SyntheticLISSRoads: procedurally generated G/R/NIR chips with 1-3 px roads,
-spectrally plausible (vegetation high-NIR background, low-NDVI roads).
-Used for smoke tests and pipeline validation only — real experiments use
-proxy/LISS-IV tiles (see RESEARCH.md).
-"""
-
 import numpy as np
 import torch
 from torch.utils.data import Dataset
@@ -19,7 +11,6 @@ def _random_road_network(size, rng, n_trunks=3, n_branches=4):
     mask = np.zeros((size, size), dtype=np.uint8)
     pts = []
     for _ in range(n_trunks):
-        # trunk: crosses the tile edge-to-edge with jitter
         side = rng.integers(0, 2)
         a = (rng.integers(0, size), 0) if side else (0, rng.integers(0, size))
         b = (rng.integers(0, size), size - 1) if side else (size - 1, rng.integers(0, size))
@@ -45,16 +36,13 @@ def _random_road_network(size, rng, n_trunks=3, n_branches=4):
 
 
 def _spectral_render(mask_w, size, rng):
-    """mask_w: road mask possibly dilated. Returns (3,H,W) float32 in [0,1]."""
-    # vegetation background with patchy fields
     base = gaussian_filter(rng.random((size, size)), 8)
-    veg = (base - base.min()) / (np.ptp(base) + 1e-6)        # 0=soil, 1=dense veg
+    veg = (base - base.min()) / (np.ptp(base) + 1e-6)
     g = 0.18 + 0.10 * veg + 0.04 * rng.standard_normal((size, size))
     r = 0.16 - 0.06 * veg + 0.10 * (1 - veg) * 0.5 + 0.04 * rng.standard_normal((size, size))
     nir = 0.25 + 0.35 * veg + 0.05 * rng.standard_normal((size, size))
-    # roads: brighter visible, low NIR -> low NDVI
     road = mask_w.astype(np.float32)
-    road_soft = gaussian_filter(road, 0.6)  # mixed pixels at 5.8 m
+    road_soft = gaussian_filter(road, 0.6)
     g = g * (1 - road_soft) + (0.30 + 0.05 * rng.standard_normal((size, size))) * road_soft
     r = r * (1 - road_soft) + (0.32 + 0.05 * rng.standard_normal((size, size))) * road_soft
     nir = nir * (1 - road_soft) + (0.22 + 0.05 * rng.standard_normal((size, size))) * road_soft
@@ -63,25 +51,16 @@ def _spectral_render(mask_w, size, rng):
 
 
 class NpzTileDataset(Dataset):
-    """Loads chips produced by scripts/build_proxy.py: .npz with image (3,h,w) + mask (h,w).
-    Pads/crops to `size`; train-time augmentation: flips + 90° rotations (physically
-    sensible for nadir satellite imagery; no color jitter on non-RGB bands)."""
 
     def __init__(self, root, size=256, augment=False, with_topo_targets=True, seed=0,
                  preload=False, major_masks_dir=None, paths=None, zero_bands=None):
         import pathlib, re
-        # `paths` overrides the glob (used by leave-one-region-out to pass an
-        # explicit cross-scene tile list); otherwise glob the given root dir.
         self.paths = sorted(paths) if paths is not None else sorted(pathlib.Path(root).glob("*.npz"))
         if not self.paths:
             raise FileNotFoundError(f"no .npz tiles in {root or paths}")
         self.size, self.augment, self.with_topo = size, augment, with_topo_targets
         self.seed = seed
-        # band ablation: channel indices (0=G,1=R,2=NIR) to zero out at load time
         self.zero_bands = zero_bands or []
-        # major-roads-only training: swap the noisy all-OSM tile mask for the
-        # visible major-class scene mask (built by scripts/major_masks.py),
-        # cropped to the tile via the scene__yYY_xXX filename.
         self.major = None
         if major_masks_dir:
             md = pathlib.Path(major_masks_dir)
@@ -89,8 +68,6 @@ class NpzTileDataset(Dataset):
             self._re = re
             if not self.major:
                 raise FileNotFoundError(f"no major masks in {major_masks_dir}")
-        # RAM cache in compact dtypes (~1 MB/tile): decompress once, then every
-        # epoch is memory-bound — lets us run workers=0 (no shm) at full speed.
         self.cache = None
         if preload:
             self.cache = []
@@ -115,12 +92,11 @@ class NpzTileDataset(Dataset):
             d = np.load(self.paths[i])
             keys = d.files
         img, mask = d["image"].astype(np.float32), d["mask"].astype(np.uint8)
-        if img.shape[0] != 3:  # stored HWC
+        if img.shape[0] != 3:
             img = img.transpose(2, 0, 1)
-        for b in self.zero_bands:      # band ablation: null out a channel
+        for b in self.zero_bands:
             img[b] = 0.0
         if self.major is not None:
-            # replace all-OSM mask with cropped major-class mask; targets recomputed
             name = self.paths[i].stem
             scene, tile = name.split("__")
             y = int(self._re.search(r"y(\d+)", tile).group(1))
@@ -130,22 +106,19 @@ class NpzTileDataset(Dataset):
                 crop = mj[y:y + mask.shape[0], x:x + mask.shape[1]]
                 if crop.shape == mask.shape:
                     mask = crop.astype(np.uint8)
-            keys = ["image", "mask"]  # force target recompute from major mask
-        # cached topology targets (scripts/precompute_targets.py) skip per-epoch
-        # skeletonize/EDT; they are transformed alongside the image below.
+            keys = ["image", "mask"]
         cached = self.with_topo and "skel" in keys
         if cached:
             skel = d["skel"].astype(np.float32)
             width = d["width"].astype(np.float32)
             aff = d["aff"].astype(np.float32)
-        # pad or center-crop to self.size
         _, h, w = img.shape
         s = self.size
         if h < s or w < s:
             ph, pw = max(0, s - h), max(0, s - w)
             img = np.pad(img, ((0, 0), (0, ph), (0, pw)), mode="reflect")
             mask = np.pad(mask, ((0, ph), (0, pw)), mode="reflect")
-            if cached:  # seam artifacts acceptable; LISS tiles are exact-size anyway
+            if cached:
                 skel = np.pad(skel, ((0, ph), (0, pw)), mode="reflect")
                 width = np.pad(width, ((0, ph), (0, pw)), mode="reflect")
                 aff = np.pad(aff, ((0, 0), (0, ph), (0, pw)), mode="reflect")
@@ -170,12 +143,10 @@ class NpzTileDataset(Dataset):
             if cached:
                 skel = np.rot90(skel, k)
                 width = np.rot90(width, k)
-                # CCW rotation advances each of the 8 directions by 2 indices
                 aff = np.stack([np.rot90(aff[(j - 2 * k) % 8], k) for j in range(8)])
                 if do_flip:
                     skel = skel[:, ::-1]
                     width = width[:, ::-1]
-                    # horizontal mirror swaps E<->W, NE<->NW, SE<->SW
                     aff = np.stack([aff[(4 - j) % 8][:, ::-1] for j in range(8)])
         img = np.ascontiguousarray(img)
         mask = np.ascontiguousarray(mask)
@@ -204,7 +175,6 @@ class SyntheticLISSRoads(Dataset):
     def __getitem__(self, i):
         rng = np.random.default_rng(self.seed * 100003 + i)
         skel_mask = _random_road_network(self.size, rng)
-        # variable width: dilate a random subset of the network
         width_px = rng.integers(1, 4)
         mask = binary_dilation(skel_mask, iterations=int(width_px) - 1) if width_px > 1 else skel_mask
         mask = mask.astype(np.uint8)

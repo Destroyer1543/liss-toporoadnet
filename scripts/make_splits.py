@@ -1,18 +1,6 @@
-"""Whole-scene holdout splits for LISS-IV tiles (v2 — replaces spatial-band v1).
-
-Test scenes (never seen in training, one per satellite, spanning road density):
-  R2F24AUG2023... (RS-2,  road frac 0.020)
-  RAF23OCT2023... (RS-2A, road frac 0.011)
-Val scene: R2F08FEB2024... (0.011)
-Train: remaining 7 scenes, including the singleton extremes (urban 0.050,
-forest 0.002) which must appear in training to be learnable at all.
-
-Clears previous split symlinks (v1 spatial bands) before rebuilding.
-"""
-
 import pathlib
 
-ROOT = pathlib.Path("/data/road_liss4/liss4_tiles")
+ROOT = pathlib.Path("data/liss4_tiles")
 TEST = ["R2F24AUG2023064073010100066SSANSTUC00GTDD",
         "RAF23OCT2023035685010100064SSANSTUC00GTDA"]
 VAL = ["R2F08FEB2024066453010100064SSANSTUC00GTDA"]
