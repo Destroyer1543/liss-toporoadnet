@@ -31,6 +31,7 @@ evaluation/     paper evaluation: whole-scene inference and mosaics, strict symm
 configs/        the training configuration of every run in the paper (see configs/README.md)
 annotation/     human observability study app (standard-library server + canvas)
 scenes.csv      benchmark and external scenes
+supplementary.pdf  supplementary material of the paper (definitions, all strict-APLS settings, extra tables)
 ```
 
 ## Setup
